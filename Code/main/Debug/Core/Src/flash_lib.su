@@ -1,0 +1,11 @@
+flash_lib.c:67:17:_flash_lib_get_sector	24	static
+flash_lib.c:115:6:_float_to_bytes	24	static
+flash_lib.c:132:6:_bytes_to_float	24	static
+flash_lib.c:149:6:_flash_lib_read_header	16	static
+flash_lib.c:159:10:flash_lib_write_to_addr	40	static
+flash_lib.c:227:6:flash_lib_read_from_addr	32	static
+flash_lib.c:271:10:flash_lib_write_current_record	24	static
+flash_lib.c:287:10:flash_lib_read_current_record	24	static
+flash_lib.c:300:10:flash_lib_init	32	static
+flash_lib.c:325:6:test_write	16	static
+flash_lib.c:333:6:test_read	16	static
