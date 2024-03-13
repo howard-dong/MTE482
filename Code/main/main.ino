@@ -1,6 +1,17 @@
+
 #include <Wire.h>
 #include "Adafruit_MCP9808.h"
 #include <PulseSensorPlayground.h> // Includes the PulseSensorPlayground Library.
+#include "include/flash_lib.h"
+
+/*
+ * Dont think we will end up needing this custom conf, currently disabled. 
+ * Note the name was also changed to be _XXX in /include to make sure nothing conflicted bc this shit was dense to read. 
+ * It's based on the conf that we see in stm based on the selected pins.
+ * By default, it seems like stm32duino just enables everything for our specific board. 
+*/
+// #include "include/hal_conf_custom.h"
+
 
 // Create the MCP9808 temperature sensor object
 Adafruit_MCP9808 tempsensor = Adafruit_MCP9808();
