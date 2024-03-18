@@ -13,42 +13,58 @@
   This is specially true for F1 serie (BluePill, ...)
 */
 
-#if !defined(STM32_CORE_VERSION) || (STM32_CORE_VERSION  < 0x01090000)
+#if !defined(STM32_CORE_VERSION) || (STM32_CORE_VERSION < 0x01090000)
 #error "Due to API change, this sketch is compatible with STM32_CORE_VERSION  >= 0x01090000"
 #endif
 
 // 'pin' PWM will be managed automatically by hardware whereas 'pin2' PWM will be managed by software through interrupt callback
-#if defined(LED_BUILTIN)
-  #define pin  LED_BUILTIN
+// #if defined(LED_BUILTIN)
+//   #define pin  LED_BUILTIN
 
-  #if LED_BUILTIN == D3
-    #define pin2  D2
-  #else
-    #define pin2  D3
-  #endif
+//   #if LED_BUILTIN == D3
+//     #define pin2  D2
+//   #else
+//     #define pin2  D3
+//   #endif
 
-#else
-  #define pin   D2
-  #define pin2  D3
-#endif
+// #else
+//   #define pin   D2
+//   #define pin2  D3
+// #endif
+
+#define pin3 D7
+#define pin2 D4
+#define pin LED_BUILTIN
+
+
+// void Update_IT_callback(void) {
+//   digitalWrite(pin2, !digitalRead(pin2));
+// }
+
+bool peltierActive = true;
+// uint32_t peltierActive = LOW;
 
 void Update_IT_callback(void)
 { // Update event correspond to Rising edge of PWM when configured in PWM1 mode
   digitalWrite(pin2, LOW); // pin2 will be complementary to pin
+  // digitalWrite(pin2, peltierActive); // pin2 will be complementary to pin
 }
 
 void Compare_IT_callback(void)
 { // Compare match event correspond to falling edge of PWM when configured in PWM1 mode
-  digitalWrite(pin2, HIGH);
+  if (peltierActive) {
+    digitalWrite(pin2, HIGH);
+  }
 }
 
-void setup()
-{
+void setup() {
   // No need to configure pin, it will be done by HardwareTimer configuration
   // pinMode(pin, OUTPUT);
 
   // Need to configure pin2, as it is not managed by HardwareTimer
   pinMode(pin2, OUTPUT);
+  pinMode(pin3, OUTPUT);
+  digitalWrite(pin3, HIGH);
 
   // Automatically retrieve TIM instance and channel associated to pin
   // This is used to be compatible with all STM32 series automatically.
@@ -61,15 +77,23 @@ void setup()
 
   MyTim->setMode(channel, TIMER_OUTPUT_COMPARE_PWM1, pin);
   // MyTim->setPrescaleFactor(8); // Due to setOverflow with MICROSEC_FORMAT, prescaler will be computed automatically based on timer input clock
-  MyTim->setOverflow(100000, MICROSEC_FORMAT); // 100000 microseconds = 100 milliseconds
-  MyTim->setCaptureCompare(channel, 50, PERCENT_COMPARE_FORMAT); // 50%
+  // MyTim->setOverflow(10000, MICROSEC_FORMAT);                     // 100000 microseconds = 100 milliseconds
+  MyTim->setOverflow(1000, HERTZ_FORMAT);                     // 100000 microseconds = 100 milliseconds
+  MyTim->setCaptureCompare(channel, 75, PERCENT_COMPARE_FORMAT);  // 50%
   MyTim->attachInterrupt(Update_IT_callback);
   MyTim->attachInterrupt(channel, Compare_IT_callback);
   MyTim->resume();
 }
 
 
-void loop()
-{
+void loop() {
   /* Nothing to do all is done by hardware. Even no interrupt required. */
+  // if (LOW == peltierActive) {
+  //   peltierActive = HIGH;
+  // }
+  // else {
+  //   peltierActive = LOW; 
+  // }
+  // // peltierActive = !peltierActive;
+  // delay(500);
 }
