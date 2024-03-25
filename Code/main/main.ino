@@ -12,18 +12,19 @@
 */
 // #include "include/hal_conf_custom.h"
 
-// Debugging options - set true/false
-#define SERIAL false
-#define SCORE_INDICATOR true // blinks the score on LED
+// Debugging options - comment/uncomment - indicators use on board LED
+// #define SERIAL
+// #define SCORE_INDICATOR // blinks the algo score
+#define PULSE_INDICATOR // lights up if pulse reading is over threshold
+// #define DATA_CYCLE_INDICATOR // switches on/off on completed data collection cycle
+// #define MOISTURE_INDICATOR // lights up if moisture reading is over threshold
+// #define TEMPERATURE_INDICATOR // lights up if moisture reading is over threshold
 
-// Defines
-#define peltierPin PA4
-#define pwmPin PA5 // Green LED on Nucleo
-#define ledPin PB13
-#define buttonPin PA3
-#define switchPin PA2
-#define peltierPeriod 1000
-
+// Write Pins
+#define PELTIER_PIN PA4
+#define LED_PIN PB13
+#define BUTTON_PIN PA3
+#define SWITCH_PIN PA2
 
 // Peltier and User Inputs
 bool peltierActive = false;
@@ -31,34 +32,31 @@ bool buttonPressed = false;
 uint8_t peltierPWM = LOW;
 uint8_t prevMode;
 
+// I2C Package
+#define DATA_LEN sizeof(float) + sizeof(uint8_t) + sizeof(uint32_t)
+#define TRANSFER_PERIOD 500
+uint8_t data[DATA_LEN] = { 0 };
+uint32_t lastTransfer = 0U;
 
 // Create the MCP9808 temperature sensor object
 Adafruit_MCP9808 tempsensor = Adafruit_MCP9808();
 
 // Pulse Sensor
-const int PulseWire = 0;     // PulseSensor PURPLE WIRE connected to ANALOG PIN 0
-const int LED = LED_BUILTIN; // The on-board Arduino LED, close to PIN 13.
-int Threshold = 550;         // Determine which Signal to "count as a beat" and which to ignore.
-// Use the "Gettting Started Project" to fine-tune Threshold Value beyond default setting.
-// Otherwise leave the default "550" value.
-
-PulseSensorPlayground pulseSensor; // Creates an instance of the PulseSensorPlayground object called "pulseSensor"
+#define PULSE_PIN PA1
 
 // Moisture sensor
-const int MoistureWire = 1;
-const int MoistureRes = 10;
-const int MoistureDelay = 10;
-
+#define MOISTURE_WIRE PA0
+const int MOISTURE_RESOLUTION = 10;
+const int MOISTURE_DELAY = 10;
 
 // Algo Setup
 const int RESOLUTION = 200;
-const float y_threshold = 30;
+const float THRESHOLD_Y = 30;
 
 #define TEMP_THRESHOLD 20
 // #define TEMP_THRESHOLD 10
 
 #define TEMP_AVERAGE 22.00
-#define MOIST_AVERAGE 1
 #define PULSE_AVERAGE 0
 
 float temperatures[RESOLUTION] = {};
@@ -69,24 +67,102 @@ int data_index = 0;
 
 int w[3] = { 8, 4, 1 }; // Moisture, Temperature, Pulse
 
-float m_avg = MOIST_AVERAGE;
+float m_avg = 0;
 float t_avg = TEMP_AVERAGE;
-float prev_pulse_index = 0.0;
+float p_avg = 0;
+float prev_pulse_index = 0;
 
 // GLOBAL VARIABLES
 float prev_temp = 0.0;
 bool printTemps = true;
 unsigned long coolingStartTime = 0U;
 
+// Pulse Local Min/Max
+const int LOCAL_PULSES = 10;
+int max_pulses[LOCAL_PULSES] = {}; // Pulse indicies
+int min_pulses[LOCAL_PULSES] = {}; // Pulse indicies
+int min_pulse_index = 0;
+int max_pulse_index = 0;
+float max_p_avg = 0;
+float min_p_avg = 0;
+
+float getBPM() {
+  int prev_index1 = data_index - 1;
+  int prev_index2 = data_index - 2;
+  if (data_index == 0) {
+    prev_index1 = RESOLUTION - 1;
+    prev_index2 = RESOLUTION - 2;
+  }
+  else if (data_index == 1) {
+    prev_index2 = RESOLUTION - 1;
+  }
+
+  float left = pulses[prev_index2];
+  float middle = pulses[prev_index1];
+  float right = pulses[data_index];
+
+  if ((left < middle) && (right < middle)) {
+    max_p_avg += middle - pulses[max_pulses[max_pulse_index]];
+    max_pulses[max_pulse_index] = prev_index1;
+    max_pulse_index += 1;
+    if (max_pulse_index >= LOCAL_PULSES) {
+      max_pulse_index = 0;
+    }
+  }
+
+  if ((left > middle) && (right > middle)) {
+    min_p_avg += middle - pulses[min_pulses[min_pulse_index]];
+    min_pulses[min_pulse_index] = prev_index1;
+    min_pulse_index += 1;
+    if (min_pulse_index >= LOCAL_PULSES) {
+      min_pulse_index = 0;
+    }
+  }
+
+  // Calculate BPM
+  int last_max_index = max_pulse_index + 1;
+  if (last_max_index == LOCAL_PULSES) {
+    last_max_index == 0;
+  }
+  int max_time_first = max_pulses[last_max_index];
+  int max_time_last = max_pulses[max_pulse_index];
+
+  float bpm_max = (timestamps[max_time_last] - timestamps[max_time_first]) / LOCAL_PULSES / 2;
+
+  int last_min_index = min_pulse_index + 1;
+  if (last_min_index == LOCAL_PULSES) {
+    last_min_index == 0;
+  }
+  int min_time_first = min_pulses[last_min_index];
+  int min_time_last = min_pulses[min_pulse_index];
+
+  float bpm_min = (timestamps[min_time_last] - timestamps[min_time_first]) / LOCAL_PULSES / 2;
+
+  return (bpm_max + bpm_min) / 2;
+}
+
+
+void updateData(uint32_t pulse, uint8_t bpm, float temp)
+{
+  memcpy(data, (byte*)&temp, 4);
+  data[4] = bpm;
+  memcpy(&(data[5]), (byte*)&pulse, 4);
+
+  Wire.beginTransmission(0x08);                 // starts transmit to device (8-Slave Arduino Address)
+  Wire.write(data, sizeof(data));       // sends the stored values to Slave
+  Wire.endTransmission();                    // stop transmitting; should technically check if ret == 0
+}
+
+
 // Button Interrupt Callback
 void buttonISR() {
-  if (HIGH == digitalRead(switchPin)) { // if in manual mode, do some stuff
-    digitalWrite(ledPin, !digitalRead(ledPin));
+  if (HIGH == digitalRead(SWITCH_PIN)) { // if in manual mode, do some stuff
+    digitalWrite(LED_PIN, !digitalRead(LED_PIN));
     peltierActive = !peltierActive;
   }
   else { // What happens when user button is pressed when in auto mode.
-    digitalWrite(peltierPin, LOW);
-    digitalWrite(ledPin, LOW);
+    digitalWrite(PELTIER_PIN, LOW);
+    digitalWrite(LED_PIN, LOW);
     // TODO: How do we learn from this event
   }
 }
@@ -94,15 +170,15 @@ void buttonISR() {
 void setup()
 {
   // Pin Setups
-  pinMode(peltierPin, OUTPUT);
-  digitalWrite(peltierPin, LOW);
-  pinMode(ledPin, OUTPUT);
-  digitalWrite(ledPin, LOW);
+  pinMode(PELTIER_PIN, OUTPUT);
+  digitalWrite(PELTIER_PIN, LOW);
+  pinMode(LED_PIN, OUTPUT);
+  digitalWrite(LED_PIN, LOW);
 
-  pinMode(buttonPin, INPUT_PULLDOWN);
-  pinMode(switchPin, INPUT);
+  pinMode(BUTTON_PIN, INPUT_PULLDOWN);
+  pinMode(SWITCH_PIN, INPUT);
 
-  attachInterrupt(digitalPinToInterrupt(buttonPin), buttonISR, FALLING);
+  attachInterrupt(digitalPinToInterrupt(BUTTON_PIN), buttonISR, FALLING);
 
 #if SERIAL
   Serial.begin(9600);
@@ -115,7 +191,7 @@ void setup()
   if (!tempsensor.begin(0x18))
   {
     while (1) { // Can't find MCP9808
-      digitalWrite(ledPin, !digitalRead(ledPin));
+      digitalWrite(LED_PIN, !digitalRead(LED_PIN));
       delay(100);
     }
   }
@@ -129,29 +205,32 @@ void setup()
 
   tempsensor.wake(); // wake up, ready to read!
   float t_read = tempsensor.readTempC();
+  float m_read = analogRead(MOISTURE_WIRE);
+  float p_read = analogRead(PULSE_PIN);
 
   // Buffer setup
   for (int i = 0; i < RESOLUTION; i++) {
     temperatures[i] = t_read;
-    moistures[i] = MOIST_AVERAGE;
-    pulses[i] = PULSE_AVERAGE;
+    moistures[i] = m_read;
+    pulses[i] = p_read;
   }
 
   // Finish Setup
-  digitalWrite(ledPin, HIGH);
+  digitalWrite(LED_PIN, HIGH);
   for (uint8_t i = 0; i < 6; i++) {
-    digitalWrite(ledPin, !digitalRead(ledPin));
+    digitalWrite(LED_PIN, !digitalRead(LED_PIN));
     delay(100);
   }
-  digitalWrite(ledPin, LOW);
+  digitalWrite(LED_PIN, LOW);
 }
 
 void loop()
 {
   // Read user inputs
+  // TODO: Should we delete currentMillis? we dont have the peltier toggling logic rn
   unsigned long currentMillis = millis();
-  uint8_t pressEvent = digitalRead(buttonPin);
-  uint8_t manualMode = digitalRead(switchPin);
+  uint8_t pressEvent = digitalRead(BUTTON_PIN);
+  uint8_t manualMode = digitalRead(SWITCH_PIN);
 
 
   // ---------- DATA COLLECTION ----------
@@ -164,24 +243,23 @@ void loop()
   // tempsensor.shutdown_wake(1); // shutdown MSP9808 - power consumption ~0.1 mikro Ampere, stops temperature sampling
   // delay(200);
 
+  float m_read = analogRead(MOISTURE_WIRE) + 1.0;
+  float p_read = analogRead(PULSE_PIN); // to be Scaled
+
   // PULSE SENSOR
+  getBPM();
 
   // INTERPRET SENSORS
-  m_avg -= 1.0 * moistures[data_index] / RESOLUTION;
-  t_avg -= temperatures[data_index] / RESOLUTION;
-
-  float m_read = analogRead(MoistureWire) + 1.0;
-  float p_read = analogRead(PulseWire); // to be Scaled
-
-  m_avg += m_read / RESOLUTION;
-  t_avg += t_read / RESOLUTION;
+  m_avg += (m_read - moistures[data_index]) / RESOLUTION;
+  t_avg += (t_read - temperatures[data_index]) / RESOLUTION;
+  p_avg += (p_read - pulses[data_index]) / RESOLUTION;
 
   moistures[data_index] = int(m_read);
   pulses[data_index] = p_read;
   temperatures[data_index] = t_read;
   timestamps[data_index] = millis();
 
-  float m_score = 1.0 * (m_read - m_avg) / m_avg;
+  float m_score = 1.0 * (m_read - m_avg);
   float t_score = 100.0 * (t_read - t_avg) / t_avg;
 
   float y = m_score * w[0] + t_score * w[1] + 0 * w[2];
@@ -205,24 +283,63 @@ void loop()
 
   data_index += 1;
   if (data_index >= RESOLUTION) {
+
+#ifdef DATA_CYCLE_INDICATOR
+    digitalWrite(LED_PIN, !digitalRead(LED_PIN));
+#endif
+
     data_index = 0;
   }
 
+#ifdef MOISTURE_INDICATOR
+  // if (m_score > 0) {
+  //   digitalWrite(LED_PIN, HIGH);
+  // } else if (m_score < 0) {
+  //   digitalWrite(LED_PIN, LOW);
+  // }
+
+  int pow = 0;
+  int num = 1;
+  while (m_score > num) {
+    pow += 1;
+    num *= 10;
+  }
+
+  for (uint8_t i = 0; i < pow; i++) {
+    digitalWrite(LED_PIN, HIGH);
+    delay(100);
+    digitalWrite(LED_PIN, LOW);
+    delay(100);
+  }
+
+#endif
+
+#ifdef PULSE_INDICATOR
+  float z = 0.7;
+  if (p_read > p_avg + z * (max_p_avg - p_avg)) {
+    digitalWrite(LED_PIN, HIGH);
+  }
+  else {
+    digitalWrite(LED_PIN, LOW);
+  }
+#endif
+
   // State control
   if (manualMode != prevMode) { // Reset states when switching from manual to auto or vice versa
-    digitalWrite(ledPin, LOW);
-    digitalWrite(peltierPin, LOW);
+    digitalWrite(LED_PIN, LOW);
+    digitalWrite(PELTIER_PIN, LOW);
     peltierActive = false;
   }
 
+  // PELTIER ON/OFF LOGIC
   if (LOW == manualMode) { // NOT in manual mode
     // TODO: AUTO MODE HERE
     // if (t_read != prev_temp) {
     //   prev_temp = t_read;
     //   for(uint8_t i = 0; i < 2; i++) {
-    //       digitalWrite(ledPin, HIGH);
+    //       digitalWrite(LED_PIN, HIGH);
     //       delay(100);
-    //       digitalWrite(ledPin, LOW);
+    //       digitalWrite(LED_PIN, LOW);
     //       delay(100);
     //     }
     //     delay(500);
@@ -234,16 +351,16 @@ void loop()
       int tens = t_score / 10;
       int ones = t_score - tens * 10;
       for (uint8_t i = 0; i < tens; i++) {
-        digitalWrite(ledPin, HIGH);
+        digitalWrite(LED_PIN, HIGH);
         delay(100);
-        digitalWrite(ledPin, LOW);
+        digitalWrite(LED_PIN, LOW);
         delay(100);
       }
       delay(500);
       for (uint8_t i = 0; i < ones; i++) {
-        digitalWrite(ledPin, HIGH);
+        digitalWrite(LED_PIN, HIGH);
         delay(100);
-        digitalWrite(ledPin, LOW);
+        digitalWrite(LED_PIN, LOW);
         delay(100);
       }
       delay(500);
@@ -251,8 +368,8 @@ void loop()
 #endif // SCORE_INDICATOR
 
     if ((t_score > (TEMP_THRESHOLD)) && (coolingStartTime == 0U)) {
-      digitalWrite(ledPin, HIGH);
-      digitalWrite(peltierPin, HIGH);
+      digitalWrite(LED_PIN, HIGH);
+      digitalWrite(PELTIER_PIN, HIGH);
       printTemps = false;
       coolingStartTime = millis();
     }
@@ -261,14 +378,14 @@ void loop()
     else if ((millis() - coolingStartTime) > 4000U) {
       if (t_score < (TEMP_THRESHOLD * 0.8)) {
         coolingStartTime = 0U;
-        digitalWrite(ledPin, LOW);
-        digitalWrite(peltierPin, LOW);
+        digitalWrite(LED_PIN, LOW);
+        digitalWrite(PELTIER_PIN, LOW);
         printTemps = true;
       }
     }
     // else if (t_score < (TEMP_THRESHOLD*0.65)) { 
-    //   digitalWrite(ledPin, LOW);
-    //   // digitalWrite(peltierPin, LOW);
+    //   digitalWrite(LED_PIN, LOW);
+    //   // digitalWrite(PELTIER_PIN, LOW);
     //   // printTemps = true;
     // }
   }
@@ -285,20 +402,29 @@ void loop()
       // else {
       //   peltierPWM = LOW;
       // }
-      // // digitalWrite(ledPin, peltierPWM);
-      // digitalWrite(peltierPin, peltierPWM);
+      // // digitalWrite(LED_PIN, peltierPWM);
+      // digitalWrite(PELTIER_PIN, peltierPWM);
 
-      digitalWrite(peltierPin, HIGH);
+      digitalWrite(PELTIER_PIN, HIGH);
       // delay(200);
-      // digitalWrite(peltierPin, LOW);
+      // digitalWrite(PELTIER_PIN, LOW);
       // delay(700);
     }
     else {
-      digitalWrite(peltierPin, LOW);
+      digitalWrite(PELTIER_PIN, LOW);
     }
   }
 
 
   prevMode = manualMode;
-  delay(10); // considered best practice in a simple sketch.
+
+  if (millis() - lastTransfer > TRANSFER_PERIOD)
+  {
+    // TODO: Update 80 to be bpm
+    // TODO: Update p_read to be last 500 ms of data so that it visualizes properly
+    updateData(p_read, 80, t_read);
+    lastTransfer = millis();
+  }
+
+  delay(100); // increase loop time for sensor calibration
 }
